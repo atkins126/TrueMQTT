@@ -1,18 +1,18 @@
-unit MQTT.MQTTV311PacketBuilder;
+unit MQTT.V311PacketBuilder;
 
 interface
 
 uses
   System.SysUtils,
-  MQTT.Types, MQTT.IMQTTPacketBuilder;
+  MQTT.Types, MQTT.IPacketBuilder;
 
 type
-  TMQTTV311PacketBuilder = class(TInterfacedObject, IMQTTPacketBuilder)
+  TMQTTV311PacketBuilder = class(TInterfacedObject, IPacketBuilder)
   strict private
     fPacketId: UInt16;
   public
-    function BuildConnectPacket(pKeepAliveInterval: UInt16; const pUsername: string;
-      const pPassword: string): TBytes;
+    function BuildConnectPacket(pKeepAliveInterval: UInt16;
+      pClientParams: TConnectParams): TBytes;
     function BuildPublishPacket(const pTopic: string; pPayload: TBytes;
       pRetain, pDup: Boolean; pQosLevel: TQosLevel; var pPacketID: UInt16): TBytes;
     function BuildPubrelPacket(pPacketIdentifier: UInt16): TBytes;
@@ -33,109 +33,148 @@ const
 { TMQTTV311PacketBuilder }
 
 function TMQTTV311PacketBuilder.BuildConnectPacket(pKeepAliveInterval: UInt16;
-  const pUsername: string; const pPassword: string): TBytes;
+  pClientParams: TConnectParams): TBytes;
+const
+  c_CONNECTVariableHeaderSize = 10;
 var
   vCount, vRemainingLength: Integer;
   vPacketTypeAndFlags, vConnectFlags: Byte;
-  vFixedHeader, vEncodedRemainingLength,
-    vUsernameAsBytes, vPasswordAsBytes: TBytes;
-  vVariableHeader: array[0..9] of Byte;
-  vClientLength, vUserNameLength, vPasswordLength: UInt16;
+  vEncodedRemainingLength, vClientIdAsBytes, vWillTopicAsBytes, vWillMessageAsBytes,
+  vUsernameAsBytes, vPasswordAsBytes: TBytes;
+  vClientLength, vWillTopicLength, vWillMessageLength,
+  vUserNameLength, vPasswordLength: UInt16;
 begin
-  // WARNING INCOMPLETE FUNCTION, NEEDS TO VALIDATE USERNAME, PASSWORD, QoS AND
-  // A BUNCH OF OTHER STUFF...
-
+  vClientLength := 0;
+  vWillMessageLength := 0;
+  vWillTopicLength := 0;
   vConnectFlags := 0;
 
   // 1 - Fixed header
   vPacketTypeAndFlags := Byte(TMQTTControlPacket.CONNECT) shl 4;
 
-  // 2 - Variable header
-  // 2.1 - Protocol Name
-  vVariableHeader[0] := 0;
-  vVariableHeader[1] := 4;
-  vVariableHeader[2] := 77; // M
-  vVariableHeader[3] := 81; // Q
-  vVariableHeader[4] := 84; // T
-  vVariableHeader[5] := 84; // T
-
-  // 2.2 - Protocol Level (4) MQTT 3.1.1
-  vVariableHeader[6] := 4;
-
   // 2.3 - Connect Flags
-
-  if pUserName <> EmptyStr then
-  begin
-    vUsernameAsBytes := TEncoding.UTF8.GetBytes(pUserName);
-    vUsernameLength := Length(vUsernameAsBytes);
-    SetNthBit(vConnectFlags, 7); //Bit-7 = User-name
-  end;
-  if pPassword <> EmptyStr then
-  begin
-    vPasswordAsBytes := TEncoding.UTF8.GetBytes(pPassword);
-    vPasswordLength := Length(vPasswordAsBytes);
-    SetNthBit(vConnectFlags, 6); //Bit-6 = Password
-  end;
-  //SetNthBit(vConnectFlags, 5); //Bit-5 = Will-retain
-  //SetNthBit(vConnectFlags, 4); //Bit-4 = Will-QoS(4)
-  //SetNthBit(vConnectFlags, 3); //Bit-3 = Will-QoS(3)
-  //SetNthBit(vConnectFlags, 2); //Bit-2 = Will-Flag
+  if pClientParams.WillRetain then
+    SetNthBit(vConnectFlags, 5); //Bit-5 = Will-Retain
+  vConnectFlags := vConnectFlags or (Byte(pClientParams.WillQos) shl 3);
 
   // Let the server generate the ClientID.
   // WillQos must be 0, server must accept anonymous clients and
   // empty client-ids
   SetNthBit(vConnectFlags, 1); //Bit-1 = Clean Session
-  //SetNthBit(vConnectFlags, 0); //Bit-0 = Reserved (must be zero)
-
-  vVariableHeader[7] := vConnectFlags;
-
-  // 2.4 - Keep alive
-  vVariableHeader[8] := PByte(@pKeepAliveInterval)[1];
-  vVariableHeader[9] := PByte(@pKeepAliveInterval)[0];
 
   // 3 - Payload
-  // ClientId
-  vClientLength := 0;
-  // WillTopic
-  // WillMessage
-  // Username
-  // Password
+  vRemainingLength := c_CONNECTVariableHeaderSize; //Variable header len + Payload len
 
-  vRemainingLength := Length(vVariableHeader) + 2; //Variable header len + Payload len
+  if pClientParams.ClientId <> EmptyStr then
+  begin
+    vClientIdAsBytes := TEncoding.UTF8.GetBytes(pClientParams.ClientId);
+    vClientLength := Length(vClientIdAsBytes);
+    Inc(vRemainingLength, 2 + vClientLength);
+  end
+  else
+    Inc(vRemainingLength, Sizeof(Word));
+
+  if (pClientParams.WillTopic <> EmptyStr) then
+  begin
+    vWillTopicAsBytes := TEncoding.UTF8.GetBytes(pClientParams.WillTopic);
+    vWillTopicLength := Length(vWillTopicAsBytes);
+    Inc(vRemainingLength, 2 + vWillTopicLength);
+    SetNthBit(vConnectFlags, 2); //Bit-2 = Will-Flag
+
+    vWillMessageAsBytes := TEncoding.UTF8.GetBytes(pClientParams.WillMessage);
+    vWillMessageLength := Length(vWillMessageAsBytes);
+    Inc(vRemainingLength, 2 + vWillMessageLength);
+  end;
+
+  if pClientParams.UserName <> EmptyStr then
+  begin
+    vUsernameAsBytes := TEncoding.UTF8.GetBytes(pClientParams.UserName);
+    vUsernameLength := Length(vUsernameAsBytes);
+    SetNthBit(vConnectFlags, 7); //Bit-7 = User-name
+    Inc(vRemainingLength, 2 + vUsernameLength);
+  end;
+
+  if (pClientParams.Password <> EmptyStr) and (pClientParams.Username <> EmptyStr) then
+  begin
+    vPasswordAsBytes := TEncoding.UTF8.GetBytes(pClientParams.Password);
+    vPasswordLength := Length(vPasswordAsBytes);
+    SetNthBit(vConnectFlags, 6); //Bit-6 = Password
+    Inc(vRemainingLength, 2 + vPasswordLength);
+  end;
   vEncodedRemainingLength := EncodeVarInt32(vRemainingLength);
-  SetLength(vFixedHeader, 1 + Length(vEncodedRemainingLength));
-  vFixedHeader[0] := vPacketTypeAndFlags;
-  Move(vEncodedRemainingLength[0], vFixedHeader[1], Length(vEncodedRemainingLength));
 
   // FixedHeaderLen + VariableHeaderLen + PayloadLen
-  SetLength(Result, Length(vFixedHeader) + vRemainingLength);
+  SetLength(Result, 1 + Length(vEncodedRemainingLength) + vRemainingLength);
 
   // 1 - FixedHeader
   vCount := 0;
-  Move(vFixedHeader[0], Result[vCount], Length(vFixedHeader));
-  Inc(vCount, Length(vFixedHeader));
+  Result[vCount] := vPacketTypeAndFlags;
+  Move(vEncodedRemainingLength[0], Result[vCount + 1], Length(vEncodedRemainingLength));
+  Inc(vCount, 1 + Length(vEncodedRemainingLength));
+
   // 2 - VariableHeader
-  Move(vVariableHeader[0], Result[vCount], Length(vVariableHeader));
-  Inc(vCount, Length(vVariableHeader));
+  // 2.1 - Protocol Name
+  Result[vCount] := 0;
+  Result[vCount + 1] := 4;
+  Result[vCount + 2] := 77; // M
+  Result[vCount + 3] := 81; // Q
+  Result[vCount + 4] := 84; // T
+  Result[vCount + 5] := 84; // T
+  // 2.2 - Protocol Level (4) MQTT 3.1.1
+  Result[vCount + 6] := 4;
+  Result[vCount + 7] := vConnectFlags;
+  // 2.4 - Keep alive
+  Result[vCount + 8] := PByte(@pKeepAliveInterval)[1];
+  Result[vCount + 9]  := PByte(@pKeepAliveInterval)[0];
+  Inc(vCount, c_CONNECTVariableHeaderSize);
+
   // 3 - Payload
   Result[vCount] := PByte(@vClientLength)[1];
   Result[vCount + 1] := PByte(@vClientLength)[0];
-  Inc(vCount, 2);
-  if pUserName <> EmptyStr then
+  Inc(vCount, Sizeof(Word));
+
+  // 3.1 - ClientId
+  if pClientParams.ClientId <> EmptyStr then
+  begin
+    Move(vClientIdAsBytes[0], Result[vCount], vClientLength);
+    Inc(vCount, vClientLength);
+  end;
+
+  if (pClientParams.WillTopic <> EmptyStr) then
+  begin
+    // 3.2 -  Will Topic
+    Result[vCount] := PByte(@vWillTopicLength)[1];
+    Result[vCount + 1] := PByte(@vWillTopicLength)[0];
+    Inc(vCount, Sizeof(Word));
+    Move(vWillTopicAsBytes[0], Result[vCount], vWillTopicLength);
+    Inc(vCount, vWillTopicLength);
+
+    // 3.3 - Will Message
+    Result[vCount] := PByte(@vWillMessageLength)[1];
+    Result[vCount + 1] := PByte(@vWillMessageLength)[0];
+    Inc(vCount, Sizeof(Word));
+    if Length(vWillMessageAsBytes) > 0 then
+    begin
+      Move(vWillMessageAsBytes[0], Result[vCount], vWillMessageLength);
+      Inc(vCount, vWillMessageLength);
+    end;
+  end;
+
+  if pClientParams.UserName <> EmptyStr then
   begin
     Result[vCount] := PByte(@vUserNameLength)[1];
     Result[vCount + 1] := PByte(@vUserNameLength)[0];
-    Inc(vCount, 2);
+    Inc(vCount, Sizeof(Word));
     Move(vUsernameAsBytes[0], Result[vCount], vUserNameLength);
     Inc(vCount, vUserNameLength);
   end;
-  if pPassword <> EmptyStr then
+
+  if (pClientParams.Password <> EmptyStr) and (pClientParams.Username <> EmptyStr) then
   begin
     Result[vCount] := PByte(@vPasswordLength)[1];
     Result[vCount + 1] := PByte(@vPasswordLength)[0];
-    Inc(vCount, 2);
+    Inc(vCount, Sizeof(Word));
     Move(vPasswordAsBytes[0], Result[vCount], vPasswordLength);
-    //Inc(vCount, vPasswordLength);
   end;
 end;
 
@@ -143,13 +182,12 @@ function TMQTTV311PacketBuilder.BuildPublishPacket(const pTopic: string;
   pPayload: TBytes; pRetain, pDup: Boolean; pQosLevel: TQosLevel; 
   var pPacketID: UInt16): TBytes;
 var
-  vRemainingLength, vPacketLength, vIndex, vPacketIDSize, vPayloadLen: Integer;
+  vRemainingLength, vIndex, vPacketIDSize, vPayloadLen: Integer;
   vPacketTypeAndFlags, vQos: Byte;
   vTopicByteLength: Word;
   vTopicAsBytes, vRemainingLengthEncoded: TBytes;
 begin
   // 2.1 Topic
-  vPacketLength := 0;
   vIndex := 0;
   vPacketIDSize := 0;
 
@@ -183,12 +221,12 @@ begin
   vRemainingLengthEncoded := EncodeVarInt32(vRemainingLength);
 
   //Building packet
-  Inc(vPacketLength, 1 + Length(vRemainingLengthEncoded) + vRemainingLength);
-  SetLength(Result, vPacketLength);
+  SetLength(Result, 1 + Length(vRemainingLengthEncoded) + vRemainingLength);
 
   // 1 - Fixed header
   Result[vIndex] := vPacketTypeAndFlags;
   Inc(vIndex);
+
   Move(vRemainingLengthEncoded[0], Result[vIndex], Length(vRemainingLengthEncoded));
   Inc(vIndex, Length(vRemainingLengthEncoded));
 
@@ -231,12 +269,12 @@ function TMQTTV311PacketBuilder.BuildSubscribePacket(
   const pTopics: TArray<TTopicFilter>; var pPacketIdentifier: UInt16): TBytes;
 var
   vCount, vRemainingLength: Integer;
-  vPacketTypeAndFlags, vDummy, vReserved: Byte;
+  vPacketTypeAndFlags: Byte;
   vPacketIdentifier: array[0..1] of Byte;
   vTotalTopicsByteLength, vIndex: UInt32;
   vTopicsByteLength: TArray<Word>;
   vTopicsAsBytes: TArray<TArray<Byte>>;
-  vPayload, vRemainingLengthEncoded: TBytes;
+  vRemainingLengthEncoded: TBytes;
 begin
   if pTopics = nil then
     Exit;
@@ -254,14 +292,9 @@ begin
     vTotalTopicsByteLength := vTotalTopicsByteLength + vTopicsByteLength[vCount];
   end;
 
-  vDummy := Byte(TMQTTControlPacket.SUBSCRIBE);
-  vReserved := 2;
-  vPacketTypeAndFlags := 0;
-
   // 1 - Fixed header byte-1 flag
-  vDummy := vDummy shl 4;
-  vPacketTypeAndFlags := vPacketTypeAndFlags or vDummy;
-  vPacketTypeAndFlags := vPacketTypeAndFlags or vReserved;
+  vPacketTypeAndFlags := Byte(TMQTTControlPacket.SUBSCRIBE) shl 4;
+  vPacketTypeAndFlags := vPacketTypeAndFlags or 2;
 
   // 2 - Variable header
   AtomicIncrement(fPacketId);
@@ -269,26 +302,9 @@ begin
   vPacketIdentifier[0] := PByte(@fPacketId)[1];
   vPacketIdentifier[1] := PByte(@fPacketId)[0];
 
-  // 3 - Payload (Subscribe without payload is a protocol violation)
-  // 3 bytes because it's UTF8Str size + QoS
-  vIndex := 0;
-  SetLength(vPayload, (Length(vTopicsAsBytes) * 3) + vTotalTopicsByteLength);
-  for vCount := 0 to Length(vTopicsAsBytes) - 1 do
-  begin
-    vPayload[vIndex] := PByte(@vTopicsByteLength[vCount])[1];
-    vPayload[vIndex + 1] := PByte(@vTopicsByteLength[vCount])[0];
-    Inc(vIndex, 2);
-
-    Move(vTopicsAsBytes[vCount][0], vPayload[vIndex],
-      vTopicsByteLength[vCount]);
-    Inc(vIndex, vTopicsByteLength[vCount]);
-
-    Move(pTopics[vCount].Qos, vPayload[vIndex], 1);
-    Inc(vIndex, Sizeof(TQosLevel));
-  end;
-
   // |Variable Header Size| + |Payload Size|
-  vRemainingLength := 2 + Length(vPayload);
+  // 3 bytes because it's UTF8Str size + QoS
+  vRemainingLength := 2 + (Length(vTopicsAsBytes) * 3) + vTotalTopicsByteLength;
   vRemainingLengthEncoded := EncodeVarInt32(vRemainingLength);
 
   vIndex := 0;
@@ -304,19 +320,35 @@ begin
   Move(vPacketIdentifier[0], Result[vIndex], Length(vPacketIdentifier));
   Inc(vIndex, Length(vPacketIdentifier));
 
-  Move(vPayload[0], Result[vIndex], Length(vPayload));
+  // 3 - Payload
+  for vCount := 0 to Length(vTopicsAsBytes) - 1 do
+  begin
+    // 3.1 - Length
+    Result[vIndex] := PByte(@vTopicsByteLength[vCount])[1];
+    Result[vIndex + 1] := PByte(@vTopicsByteLength[vCount])[0];
+    Inc(vIndex, 2);
+
+    // 3.2 - Topic
+    Move(vTopicsAsBytes[vCount][0], Result[vIndex],
+      vTopicsByteLength[vCount]);
+    Inc(vIndex, vTopicsByteLength[vCount]);
+
+    // 3.3 - QoS
+    Move(pTopics[vCount].Qos, Result[vIndex], 1);
+    Inc(vIndex, Sizeof(TQosLevel));
+  end;
 end;
 
 function TMQTTV311PacketBuilder.BuildUnsubscribePacket(pTopics: TArray<string>;
   var pPacketIdentifier: UInt16): TBytes;
 var
-  vCount, vIndex, vRemainingLength, vPayloadLen: Integer;
-  vPacketTypeAndFlags, vDummy, vReserved: Byte;
+  vCount, vIndex, vRemainingLength: Integer;
+  vPacketTypeAndFlags: Byte;
   vPacketIdentifier: array[0..1] of Byte;
   vTotalTopicsByteLength: UInt32;
   vTopicsAsBytes: TArray<TArray<Byte>>;
   vTopicsByteLength: TArray<Word>;
-  vEncodedRemainingLength, vPayload: TBytes;
+  vEncodedRemainingLength: TBytes;
 begin
   if pTopics = nil then
     Exit;
@@ -325,7 +357,7 @@ begin
   if (Length(pTopics) = 1) and (pTopics[0] = EmptyStr) then
     Exit;
 
-  // 3.1 Topic
+  // 3.1 - Topic
   vTotalTopicsByteLength := 0;
   SetLength(vTopicsAsBytes, Length(pTopics));
   SetLength(vTopicsByteLength, Length(pTopics));
@@ -339,12 +371,8 @@ begin
   end;
 
   // 1 - Fixed header byte-1 flag ($A2, 162 or 0b10100010)
-  vDummy := Byte(TMQTTControlPacket.UNSUBSCRIBE);
-  vReserved := 2;
-  vPacketTypeAndFlags := 0;
-  vDummy := vDummy shl 4;
-  vPacketTypeAndFlags := vPacketTypeAndFlags or vDummy;
-  vPacketTypeAndFlags := vPacketTypeAndFlags or vReserved;
+  vPacketTypeAndFlags := Byte(TMQTTControlPacket.UNSUBSCRIBE) shl 4;
+  vPacketTypeAndFlags := vPacketTypeAndFlags or 2;
 
   // 2 - Variable header
   AtomicIncrement(fPacketId);
@@ -352,23 +380,7 @@ begin
   vPacketIdentifier[0] := PByte(@fPacketId)[1];
   vPacketIdentifier[1] := PByte(@fPacketId)[0];
 
-  // 3 - Payload
-  vIndex := 0;
-  vPayloadLen := (2 * Length(pTopics)) + vTotalTopicsByteLength;
-  SetLength(vPayload,  vPayloadLen);
-  for vCount := 0 to Length(vTopicsAsBytes) - 1 do
-  begin
-    vPayload[vIndex] := PByte(@vTopicsByteLength[vCount])[1];
-    vPayload[vIndex + 1] := PByte(@vTopicsByteLength[vCount])[0];
-    Inc(vIndex, 2);
-
-    Assert(vTopicsByteLength[vCount] = Length(vTopicsAsBytes[vCount]));
-    Move(vTopicsAsBytes[vCount][0], vPayload[vIndex],
-      vTopicsByteLength[vCount]);
-    Inc(vIndex, vTopicsByteLength[vCount]);
-  end;
-
-  vRemainingLength := Length(vPacketIdentifier) + vPayloadLen;
+  vRemainingLength := Length(vPacketIdentifier) + (2 * Length(pTopics)) + vTotalTopicsByteLength;
   vEncodedRemainingLength := EncodeVarInt32(vRemainingLength);
 
   SetLength(Result, 1 + Length(vEncodedRemainingLength) + vRemainingLength);
@@ -387,7 +399,17 @@ begin
   Inc(vIndex, Length(vPacketIdentifier));
 
   // 3 - Payload
-  Move(vPayload[0], Result[vIndex], vPayloadLen);
+  for vCount := 0 to Length(vTopicsAsBytes) - 1 do
+  begin
+    Result[vIndex] := PByte(@vTopicsByteLength[vCount])[1];
+    Result[vIndex + 1] := PByte(@vTopicsByteLength[vCount])[0];
+    Inc(vIndex, 2);
+
+    Assert(vTopicsByteLength[vCount] = Length(vTopicsAsBytes[vCount]));
+    Move(vTopicsAsBytes[vCount][0], Result[vIndex],
+      vTopicsByteLength[vCount]);
+    Inc(vIndex, vTopicsByteLength[vCount]);
+  end;
 end;
 
 function TMQTTV311PacketBuilder.BuildPingReqPacket: TBytes;

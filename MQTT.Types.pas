@@ -34,11 +34,26 @@ type
   TQosLevel = (qlAtMostOnceDelivery, qlAtLeastOnceDelivery, qlExactlyOnceDelivery);
 
   TOnData = procedure(pData: TBytes) of object;
+  TConnackEvent = procedure(pReturnCode: TConnackReturnCodes) of object;
+  TPacketIDEvent = procedure(pPacketID: UInt16) of object;
+  TSubackEvent = procedure(pPacketID:UInt16; pQosLevels: TArray<Integer>) of object;
   TSubscribeEvent = procedure(pPacketID: UInt16; pQoSLevel: TQoSLevel; const pTopic: string) of object;
   TUnsubscribeEvent = procedure(pPacketID: UInt16) of object;
   TPubackEvent = procedure(pPacketID: UInt16; const pTopic: string) of object;
   TPubcompEvent = procedure(pPacketID: UInt16; const pTopic: string) of object;
   TPublishEvent = procedure(pPacketID: UInt16; const pTopic: string; pPayload: TBytes) of object;
+
+  TConnectParams = packed record
+    ClientId: string;
+    WillRetain: Boolean;
+    WillQos: TQosLevel;
+    WillTopic: string;
+    WillMessage: string;
+    Username: string;
+    Password: string;
+    constructor Create(pWillQos: TQosLevel; pWillRetain: Boolean;
+      const pClientID, pWillTopic, pWillMessage, pUsername, pPassword: string);
+  end;
 
   // It needs to be packed elsewise some weird exception happens when cleaning up memory.
   TTopicFilter = packed record
@@ -60,6 +75,20 @@ constructor TTopic.Create(pPacketID: UInt16; pTopicFilter: TTopicFilter);
 begin
   PacketID := pPacketID;
   TopicFilter := pTopicFilter;
+end;
+
+{ TClientParams }
+
+constructor TConnectParams.Create(pWillQos: TQosLevel; pWillRetain: Boolean;
+  const pClientID, pWillTopic, pWillMessage, pUsername, pPassword: string);
+begin
+  ClientId := pClientId;
+  WillQos := pWillQos;
+  WillRetain := pWillRetain;
+  WillTopic := pWillTopic;
+  WillMessage := pWillMessage;
+  Username := pUsername;
+  Password := pPassword;
 end;
 
 end.
